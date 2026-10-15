@@ -2,11 +2,7 @@ import { z } from "zod";
 
 import type { ToolContract } from "./toolContractTypes.js";
 import { advertisedInputExamples } from "./advertisedInputExamples.js";
-import {
-  advertisedReferenceExpansionBudget,
-  inputSchemaWithinReferenceExpansionBudget,
-  presentInputJsonSchema,
-} from "./inputSchemaPresentation.js";
+import { presentInputJsonSchema } from "./inputSchemaPresentation.js";
 import { digestCanonicalValue } from "../domain/canonicalDigest.js";
 
 const PROPERTY_DESCRIPTIONS: Readonly<Record<string, string>> = {
@@ -64,31 +60,25 @@ export const toolInputSchemaWithMetadata = <Contract extends ToolContract>(
     contract.inputSchema,
     "input",
     (project) => (options) => {
-      const shared = project({
-        ...options,
-        libraryOptions: { reused: "ref", ...options.libraryOptions },
-      });
+      const inline = presentInputJsonSchema(
+        project({
+          ...options,
+          libraryOptions: { reused: "inline", ...options.libraryOptions },
+        }),
+        fallbackPropertyDescription,
+      );
       const examples = advertisedInputExamples(contract);
       return {
-        // Sharing definitions only helps clients that resolve them. A client
-        // rendering declarations from a shared expansion budget degrades
-        // every reference past it to `unknown`, so an input whose shared form
-        // exceeds the budget is re-projected without shared definitions.
-        ...inputSchemaWithinReferenceExpansionBudget(
-          presentInputJsonSchema(shared, fallbackPropertyDescription),
-          () =>
-            presentInputJsonSchema(
-              project({
-                ...options,
-                libraryOptions: {
-                  ...options.libraryOptions,
-                  reused: "inline",
-                },
-              }),
-              fallbackPropertyDescription,
-            ),
-          advertisedReferenceExpansionBudget,
-        ),
+        // Advertised inputs never share definitions. Clients that never
+        // resolve schema-local references render a `$ref` parameter without
+        // structure and serialize object arguments as strings
+        // (morluto/rea#4058), and clients that resolve them under a shared
+        // expansion budget degrade later references to `unknown`
+        // (morluto/rea#1632). Inlining serves both; callers can still request
+        // the shared form explicitly through `libraryOptions`. Output schemas
+        // keep their shared definitions: clients read those as data instead
+        // of rendering caller declarations from them.
+        ...inline,
         ...(examples.length === 0 ? {} : { examples }),
       };
     },

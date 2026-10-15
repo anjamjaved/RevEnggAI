@@ -4,13 +4,14 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import {
-  advertisedReferenceExpansionBudget,
-  countLocalReferenceExpansions,
-  inputSchemaWithinReferenceExpansionBudget,
   presentInputJsonSchema,
+  schemaArrays,
+  schemaChildren,
+  schemaMaps,
 } from "./inputSchemaPresentation.js";
-import { toolContract } from "./toolContracts.js";
+import { TOOL_CONTRACTS, toolContract } from "./toolContracts.js";
 import {
+  advertisedInputJsonSchema,
   toolInputSchemaWithMetadata,
   transformAdvertisedInputJsonSchema,
 } from "./toolSchemaMetadata.js";
@@ -28,19 +29,19 @@ it.each(["draft-2020-12", "draft-07"] as const)(
       ...schema,
       title: "Transformed range inputs",
     });
-    const options = { target, libraryOptions: { reused: "inline" as const } };
-    for (const inlineFirst of [false, true]) {
+    const refOptions = { target, libraryOptions: { reused: "ref" as const } };
+    for (const refFirst of [false, true]) {
       const wrapped = transformAdvertisedInputJsonSchema(canonical, transform);
       const project = wrapped["~standard"].jsonSchema.input;
-      if (inlineFirst) project(options);
-      const shared = project({ target });
-      expect(JSON.stringify(shared)).toContain('"$ref":');
-      const inline = project(options);
-      expect(inline).toEqual(
-        transform(canonical["~standard"].jsonSchema.input(options)),
-      );
+      if (refFirst) project(refOptions);
+      const inline = project({ target });
       expect(JSON.stringify(inline)).not.toContain('"$ref":');
-      expect(project({ target })).toBe(shared);
+      expect(inline).toEqual(
+        transform(canonical["~standard"].jsonSchema.input({ target })),
+      );
+      const shared = project(refOptions);
+      expect(JSON.stringify(shared)).toContain('"$ref":');
+      expect(project({ target })).toBe(inline);
     }
   },
 );
@@ -239,20 +240,95 @@ describe("advertised schema metadata and validation", () => {
   );
 });
 
-describe("advertised reference expansion budget", () => {
-  it("counts references in keyword-named fields, excluding literals", () => {
-    const fields = ["default", "enum", "examples", "const", "$defs"];
-    const schema = {
-      type: "object",
-      properties: Object.fromEntries(
-        fields.map((name) => [name, { $ref: "#/$defs/value" }]),
-      ),
-      $defs: { value: { type: "string" } },
-      default: { $ref: "#/$defs/value" },
-      examples: [{ $ref: "#/$defs/value" }],
-    };
-    expect(countLocalReferenceExpansions(schema)).toBe(fields.length);
+describe("advertised input references", () => {
+  const referenceKeys = [
+    "$defs",
+    "$ref",
+    "$dynamicRef",
+    "$recursiveRef",
+    "definitions",
+  ];
+
+  /** Collect reference sharing in schema positions; annotation data stays opaque. */
+  const findReferences = (
+    node: unknown,
+    position: "schema" | "data",
+    found: string[] = [],
+    path = "schema",
+  ): string[] => {
+    if (Array.isArray(node)) {
+      node.forEach((child, index) =>
+        findReferences(child, position, found, `${path}[${index}]`),
+      );
+      return found;
+    }
+    if (typeof node !== "object" || node === null) return found;
+    for (const [key, value] of Object.entries(node)) {
+      const childPath = `${path}.${key}`;
+      if (position === "schema" && referenceKeys.includes(key))
+        found.push(childPath);
+      const childPosition = schemaMaps.has(key)
+        ? "map"
+        : schemaArrays.has(key) || schemaChildren.has(key)
+          ? "schema"
+          : "data";
+      if (childPosition === "data") continue;
+      if (Array.isArray(value) || (value !== null && typeof value === "object"))
+        findReferences(value, "schema", found, childPath);
+    }
+    return found;
+  };
+
+  it.each(["draft-2020-12", "draft-07"] as const)(
+    "advertises every tool input without schema-local references in %s",
+    (target) => {
+      const offenders = new Map<string, string[]>();
+      for (const contract of TOOL_CONTRACTS) {
+        const advertised = toolInputSchemaWithMetadata(contract)[
+          "~standard"
+        ].jsonSchema.input({ target }) as Record<string, unknown>;
+        const found = findReferences(advertised, "schema");
+        if (found.length > 0) offenders.set(contract.name, found);
+      }
+      expect([...offenders]).toEqual([]);
+    },
+  );
+
+  it("advertises the web comparison object parameters inline", () => {
+    const screenshots = advertisedInputJsonSchema(
+      toolContract("compare_web_screenshots"),
+    );
+    expect(screenshots).not.toHaveProperty("$defs");
+    expect(JSON.stringify(screenshots)).not.toContain('"$ref":');
+    const screenshotProperties = screenshots.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+    for (const property of ["before", "after"] as const) {
+      expect(screenshotProperties[property]).toMatchObject({
+        type: "object",
+        properties: expect.objectContaining({
+          media_type: { type: "string", const: "image/png" },
+          sha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        }),
+      });
+      expect(screenshotProperties[property]).not.toHaveProperty("$ref");
+    }
+    const captures = advertisedInputJsonSchema(
+      toolContract("compare_web_captures"),
+    );
+    expect(captures).not.toHaveProperty("$defs");
+    expect(JSON.stringify(captures)).not.toContain('"$ref":');
+    expect(Object.keys(captures.properties as object)).toEqual(
+      expect.arrayContaining([
+        "before",
+        "after",
+        "before_scenario",
+        "after_scenario",
+      ]),
+    );
   });
+
   const reusedComponent = z
     .object({ kind: z.literal("rec"), value: z.string() })
     .strict();
@@ -273,68 +349,32 @@ describe("advertised reference expansion budget", () => {
       inputSchema: canonical,
     })["~standard"].jsonSchema.input({ target: "draft-2020-12" });
 
-  it("keeps shared definitions while every client can resolve them", () => {
-    const advertised = advertisedInput(inputWithReusedFields(8));
-    expect(advertised.$defs).toBeDefined();
-    expect(countLocalReferenceExpansions(advertised)).toBe(8);
+  it("inlines reused input fields however often they repeat", () => {
+    for (const count of [8, 33]) {
+      const advertised = advertisedInput(inputWithReusedFields(count));
+      expect(advertised).not.toHaveProperty("$defs");
+      expect(JSON.stringify(advertised)).not.toContain('"$ref":');
+      const properties = advertised.properties as Record<string, unknown>;
+      expect(properties.field_00).toMatchObject({
+        type: "object",
+        properties: { kind: { const: "rec" }, value: { type: "string" } },
+        required: ["kind", "value"],
+      });
+      expect(properties[`field_${String(count - 1).padStart(2, "0")}`]).toEqual(
+        properties.field_00,
+      );
+    }
   });
 
-  it("keeps shared definitions exactly at the budget", () => {
+  it("ignores reference-shaped annotation data while scanning", () => {
+    const literal = { properties: { target: { $ref: "literal caller data" } } };
     const advertised = advertisedInput(
-      inputWithReusedFields(advertisedReferenceExpansionBudget),
+      z.strictObject({ metadata: z.record(z.string(), z.unknown()) }).meta({
+        default: literal,
+        examples: [literal],
+      }),
     );
-    expect(advertised.$defs).toBeDefined();
-    expect(countLocalReferenceExpansions(advertised)).toBe(
-      advertisedReferenceExpansionBudget,
-    );
-  });
-
-  it("re-projects without shared definitions once the budget is exceeded", () => {
-    const advertised = advertisedInput(
-      inputWithReusedFields(advertisedReferenceExpansionBudget + 1),
-    );
-    expect(advertised.$defs).toBeUndefined();
-    expect(countLocalReferenceExpansions(advertised)).toBe(0);
-    const properties = advertised.properties as Record<string, unknown>;
-    expect(properties.field_00).toMatchObject({
-      type: "object",
-      properties: { kind: { const: "rec" }, value: { type: "string" } },
-      required: ["kind", "value"],
-    });
-  });
-
-  it("keeps the shared form untouched when it fits and swaps it when not", () => {
-    const shared = {
-      type: "object",
-      properties: { value: { $ref: "#/$defs/shared" } },
-      $defs: { shared: { type: "string" } },
-    };
-    const inlined = {
-      type: "object",
-      properties: { value: { type: "string" } },
-    };
-    expect(
-      inputSchemaWithinReferenceExpansionBudget(
-        shared,
-        () => inlined,
-        advertisedReferenceExpansionBudget,
-      ),
-    ).toBe(shared);
-    expect(
-      inputSchemaWithinReferenceExpansionBudget(
-        {
-          ...shared,
-          properties: Object.fromEntries(
-            Array.from({ length: 33 }, (_, index) => [
-              `field_${index}`,
-              { $ref: "#/$defs/shared" },
-            ]),
-          ),
-        },
-        () => inlined,
-        advertisedReferenceExpansionBudget,
-      ),
-    ).toBe(inlined);
+    expect(findReferences(advertised, "schema")).toEqual([]);
   });
 });
 
