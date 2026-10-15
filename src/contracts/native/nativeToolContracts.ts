@@ -4,6 +4,7 @@ import {
   nativeUiObservationInputSchema,
   nativeUiScenarioInputSchema,
 } from "../../domain/native/nativeUiObservation.js";
+import { windowsWindowScreenshotInputSchema } from "../../domain/native/windowsWindowScreenshot.js";
 
 import type { ToolContract } from "../toolContractTypes.js";
 import { nativeOutputSchemas } from "../toolOutputSchemaGroups.js";
@@ -19,6 +20,10 @@ const examples: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   inspect_plist: { path: "/Applications/Example.app/Contents/Info.plist" },
   list_architectures: {},
   observe_native_ui: { pid: 123, window_id: 456 },
+  capture_windows_window_screenshot: {
+    pid: 123,
+    window_handle: "0x1234",
+  },
   capture_native_ui_scenario: {
     pid: 123,
     window_id: 456,
@@ -76,6 +81,13 @@ export const swiftSymbolsSchema = z.array(
 
 /** Provider-neutral semantic operations backed initially by macOS utilities. */
 export const NATIVE_TOOL_CONTRACTS = [
+  native(
+    "capture_windows_window_screenshot",
+    "Capture one PNG of the exact existing HWND owned by the active PE application, with identity checks before and after capture. Default summary retains the full frame and returns metadata; read the same image through inspect_analysis_view kind windows-window facet screenshot using parent_evidence_id, or request detail complete for inline PNG bytes. No desktop, region, title-search, input or target launch. An owned helper enforces cancellation and timeout; PrintWindow can run target paint code.",
+    windowsWindowScreenshotInputSchema.extend({
+      detail: analysisDetailSchema.unwrap().default("summary"),
+    }),
+  ),
   native(
     "observe_native_ui",
     "Observe an already-running native app by PID and window ID, bound to the active Mach-O target. Captures a bounded accessibility tree and selected-window screenshot; OS permission denial fails without broad capture or target launch.",

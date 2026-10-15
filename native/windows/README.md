@@ -108,6 +108,27 @@ automatically. Alternatively, build it using the Linux/MinGW lane above.
   Environment names are sorted and deduplicated using Windows
   ordinal comparison, preserving their native Unicode semantics and
   caller-selected values.
+- The selected-window PNG operation admits one caller-supplied canonical HWND
+  only after its owner PID, process start time, stable executable file identity
+  and SHA-256 agree with the active PE application target. Read-only file
+  handles pin target/process-image identity and bytes before the paint request. It renders the client area through a
+  synchronous `PrintWindow(PW_CLIENTONLY)` call into an in-memory DIB and WIC PNG
+  encoder. The call runs only in a private helper supervised through the shared
+  process owner. The parent enforces a five-second helper deadline, cancellation,
+  a 256 MiB Job Object commit limit and a 64 MiB JavaScript heap. It retains any
+  failed cleanup owner and retries it before admitting another capture. It does
+  not retain a detached native thread or target-owned surface in the server.
+  Requests use bounded UTF-8 JSON on owned protocol stdin, avoiding Windows
+  command-line expansion of long paths. The helper receives the provider's
+  selected environment with ambient Node preload options removed.
+  A thread-local DPI context gives physical client dimensions without changing
+  the parent DPI policy. The implementation never enumerates windows, captures
+  a desktop/region, searches titles, sends input, changes permissions, launches
+  the target or falls back to BitBlt. Protected, elevated, hung, minimized,
+  GPU-composited or custom-drawn windows can refuse or render incompletely;
+  a successful PNG does not prove complete rendering. PrintWindow can execute
+  the selected target's paint handler, which may have target UI, filesystem or
+  network effects. The target process is never terminated by capture cleanup.
 - Cleanup walks locked directory objects, removes files by handle, and unlinks
   reparse entries without traversing their targets. Failed removal retains the
   root and ancestor leases for retry; a partially removed runtime accepts only

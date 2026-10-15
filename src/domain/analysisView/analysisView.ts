@@ -115,6 +115,13 @@ import {
   dartAotViewContextSchema,
 } from "./dartAotView.js";
 
+import {
+  projectWindowsWindowView,
+  windowsWindowSummarySchema,
+  windowsWindowViewRequestSchema,
+} from "./windowsWindowView.js";
+import { windowsWindowScreenshotResultSchema } from "../native/windowsWindowScreenshot.js";
+
 const summaryViewSchema = z.strictObject({ kind: z.literal("summary") });
 const facetViewSchema = z.strictObject({
   kind: z.literal("facet"),
@@ -226,6 +233,7 @@ export const analysisViewRequestSchema = z.discriminatedUnion("kind", [
   inventoryViewSchema,
   wasmViewRequestSchema,
   machoViewRequestSchema,
+  windowsWindowViewRequestSchema,
   interfaceBuilderViewRequestSchema,
   evmViewRequestSchema,
   managedViewRequestSchema,
@@ -348,6 +356,7 @@ const viewResultBase = {
     "inventory_artifact",
     "inspect_wasm_artifact",
     "inspect_macho",
+    "capture_windows_window_screenshot",
     "decode_interface_builder",
     "inspect_evm_interface",
     "inspect_managed_artifact",
@@ -414,6 +423,13 @@ export const machoSummaryViewResultSchema = z.strictObject({
   ...summaryViewResultBase,
   parent_operation: z.literal("inspect_macho"),
   summary: machoSummarySchema,
+});
+
+/** Exact metadata-only summary for a retained selected-window frame. */
+export const windowsWindowSummaryViewResultSchema = z.strictObject({
+  ...summaryViewResultBase,
+  parent_operation: z.literal("capture_windows_window_screenshot"),
+  summary: windowsWindowSummarySchema,
 });
 
 /** Decoded documents and graph counts for Interface Builder's selected delivery. */
@@ -492,6 +508,7 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
       inventorySummarySchema,
       wasmSummarySchema,
       machoSummarySchema,
+      windowsWindowSummarySchema,
       interfaceBuilderSummarySchema,
       evmSummarySchema,
       managedSummarySchema,
@@ -556,6 +573,13 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     view: wasmViewRequestSchema,
     item: wasmViewItemSchema,
     ...viewResultBase,
+  }),
+  z.strictObject({
+    kind: z.literal("windows-window"),
+    view: windowsWindowViewRequestSchema,
+    item: windowsWindowScreenshotResultSchema.shape.screenshot,
+    ...viewResultBase,
+    parent_operation: z.literal("capture_windows_window_screenshot"),
   }),
   z.strictObject({
     kind: z.literal("macho"),
@@ -652,59 +676,11 @@ export interface AnalysisViewParent {
 }
 
 /** View payload before the content digest is attached. */
-export type UnsignedAnalysisView =
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "api-surface" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "summary" }>,
-      "view_digest"
-    >
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "facet" }>, "view_digest">
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "item" }>, "view_digest">
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "page" }>, "view_digest">
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "javascript" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "native" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "inventory" }>,
-      "view_digest"
-    >
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "wasm" }>, "view_digest">
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "macho" }>, "view_digest">
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "interface-builder" }>,
-      "view_digest"
-    >
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "evm" }>, "view_digest">
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "qlog" }>, "view_digest">
-  | Omit<Extract<AnalysisViewResult, { readonly kind: "pcap" }>, "view_digest">
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "capture" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "managed" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "managed-members" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "android" }>,
-      "view_digest"
-    >
-  | Omit<
-      Extract<AnalysisViewResult, { readonly kind: "dart-aot" }>,
-      "view_digest"
-    >;
+type WithoutViewDigest<View extends AnalysisViewResult> =
+  View extends AnalysisViewResult ? Omit<View, "view_digest"> : never;
+
+/** Distribute over every named view so new variants retain their exact fields. */
+export type UnsignedAnalysisView = WithoutViewDigest<AnalysisViewResult>;
 
 /** Attach the content digest that must change when projected bytes change. */
 export const sealAnalysisView = (
@@ -777,6 +753,7 @@ const parentArtifactPath = (parent: AnalysisViewParent): string => {
 const retainedViewProjectors = new Map<string, typeof projectWasmArtifactView>([
   ["inspect_wasm_artifact", projectWasmArtifactView],
   ["inspect_macho", projectMachoView],
+  ["capture_windows_window_screenshot", projectWindowsWindowView],
   ["decode_interface_builder", projectInterfaceBuilderView],
   ["inspect_evm_interface", projectEvmInterfaceView],
   ["inspect_managed_artifact", projectManagedArtifactView],

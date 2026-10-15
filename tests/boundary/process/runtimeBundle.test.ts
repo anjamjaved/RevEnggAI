@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -7,30 +7,31 @@ import { describe, expect } from "vitest";
 import { bundleRuntime } from "../../../scripts/bundle-runtime.mjs";
 import { workspaceCliTest } from "../../support/cli/workspaceCliFixture.js";
 
-describe("CLI and MCP runtime bundles", () => {
-  workspaceCliTest(
-    "preserves module locations, lazy side effects, package resolution and worker entrypoints",
-    async ({ processes, workspace }) => {
-      await workspace.mkdir("dist/provider");
-      await workspace.mkdir("dist/composition");
-      await workspace.mkdir("dist/cli");
-      await workspace.mkdir("bridge");
-      await workspace.mkdir("node_modules/external-probe");
-      const files = {
-        "package.json": JSON.stringify({
-          type: "module",
-          imports: {
-            "#javascript-analysis-worker":
-              "./dist/composition/javascriptAnalysisWorkerProcess.js",
-          },
-        }),
-        "bridge/resource.txt": "bridge resource\n",
-        "node_modules/external-probe/package.json": JSON.stringify({
-          name: "external-probe",
-          main: "index.cjs",
-        }),
-        "node_modules/external-probe/index.cjs": 'module.exports = "external";',
-        "dist/provider/probe λ.js": `
+const runtimeFixtureFiles = {
+  "node_modules/zod/package.json": JSON.stringify({
+    type: "module",
+    exports: "./index.js",
+  }),
+  "node_modules/zod/index.js":
+    "export const z = {string: () => ({parse: value => value})};",
+  "dist/windows/WindowsWindowCaptureWorker.js": `
+import { z } from 'zod';
+import { generatedPackageMetadata } from '../generatedPackageMetadata.js';
+process.stdout.write(z.string().parse('capture-worker:' + generatedPackageMetadata.version));`,
+  "package.json": JSON.stringify({
+    type: "module",
+    imports: {
+      "#javascript-analysis-worker":
+        "./dist/composition/javascriptAnalysisWorkerProcess.js",
+    },
+  }),
+  "bridge/resource.txt": "bridge resource\n",
+  "node_modules/external-probe/package.json": JSON.stringify({
+    name: "external-probe",
+    main: "index.cjs",
+  }),
+  "node_modules/external-probe/index.cjs": 'module.exports = "external";',
+  "dist/provider/probe λ.js": `
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 globalThis.effects ??= [];
@@ -41,19 +42,19 @@ export const facts = {
   external: createRequire(import.meta.url)('external-probe'),
   worker: import.meta.resolve('#javascript-analysis-worker')
 };`,
-        "dist/lazy.js": `
+  "dist/lazy.js": `
 globalThis.effects.push('lazy');
 export const lazyUrl = import.meta.url;`,
-        "dist/composition/javascriptAnalysisWorkerProcess.js":
-          'process.stdout.write("worker-entry");',
-        "dist/generatedPackageMetadata.js":
-          'export const generatedPackageMetadata = { version: "1.0.0" };',
-        "dist/cli.js": 'export { facts, run } from "./main.js";',
-        "dist/cliOutput.js": 'export { facts } from "./provider/probe λ.js";',
-        "dist/cli/cliResultOutput.js":
-          'export { facts } from "../provider/probe λ.js";',
-        "dist/mcpDoctor.js": 'export { run } from "./main.js";',
-        "dist/main.js": `
+  "dist/composition/javascriptAnalysisWorkerProcess.js":
+    'process.stdout.write("worker-entry");',
+  "dist/generatedPackageMetadata.js":
+    'export const generatedPackageMetadata = { version: "1.0.0" };',
+  "dist/cli.js": 'export { facts, run } from "./main.js";',
+  "dist/cliOutput.js": 'export { facts } from "./provider/probe λ.js";',
+  "dist/cli/cliResultOutput.js":
+    'export { facts } from "../provider/probe λ.js";',
+  "dist/mcpDoctor.js": 'export { run } from "./main.js";',
+  "dist/main.js": `
 import { facts } from './provider/probe λ.js';
 import { generatedPackageMetadata } from './generatedPackageMetadata.js';
 export { facts };
@@ -68,8 +69,20 @@ export const run = async () => {
     workerOutput: execFileSync(process.execPath, [fileURLToPath(facts.worker)], { encoding: 'utf8' })
   };
 };`,
-      };
-      for (const [path, contents] of Object.entries(files))
+};
+
+describe("CLI and MCP runtime bundles", () => {
+  workspaceCliTest(
+    "preserves module locations, lazy side effects, package resolution and worker entrypoints",
+    async ({ processes, workspace }) => {
+      await workspace.mkdir("dist/provider");
+      await workspace.mkdir("dist/composition");
+      await workspace.mkdir("dist/cli");
+      await workspace.mkdir("dist/windows");
+      await workspace.mkdir("bridge");
+      await workspace.mkdir("node_modules/external-probe");
+      await workspace.mkdir("node_modules/zod");
+      for (const [path, contents] of Object.entries(runtimeFixtureFiles))
         await workspace.write(path, contents);
       const invoke = async (entry: string) => {
         const moduleUrl = pathToFileURL(join(workspace.root, entry)).href;
@@ -110,10 +123,23 @@ export const run = async () => {
         afterLazy: ["provider", "main", "lazy"],
         workerOutput: "worker-entry",
       });
-      for (const [path, contents] of Object.entries(files))
+      for (const [path, contents] of Object.entries(runtimeFixtureFiles))
         expect(await readFile(join(workspace.root, path), "utf8")).toBe(
           contents,
         );
+      // The real capture deadline includes cold startup. This worker bundles
+      // its schema dependency instead of reopening its module graph per frame.
+      await rm(join(workspace.root, "node_modules/zod"), { recursive: true });
+      const captureWorker = () =>
+        processes.run(
+          process.execPath,
+          [join(workspace.root, "dist/windows-capture-runtime/worker.js")],
+          { cwd: workspace.root },
+        );
+      expect(await captureWorker()).toMatchObject({
+        exitCode: 0,
+        stdout: "capture-worker:1.0.0",
+      });
       expect(
         (await readdir(join(workspace.root, "dist/mcp"))).length,
       ).toBeGreaterThan(1);
@@ -125,6 +151,10 @@ export const run = async () => {
       expect(previousRelease).toMatchObject({ version: "0.0.0" });
       expect(await invoke("dist/mcp/main.js")).toEqual(previousRelease);
       expect(await invoke("dist/cli-runtime/cli.js")).toEqual(previousRelease);
+      expect(await captureWorker()).toMatchObject({
+        exitCode: 0,
+        stdout: "capture-worker:0.0.0",
+      });
     },
   );
 
@@ -133,6 +163,11 @@ export const run = async () => {
     async ({ workspace }) => {
       await workspace.mkdir("dist");
       await workspace.mkdir("dist/cli");
+      await workspace.mkdir("dist/windows");
+      await workspace.write(
+        "dist/windows/WindowsWindowCaptureWorker.js",
+        "export {};\n",
+      );
       await workspace.write("package.json", '{"type":"module"}');
       for (const path of [
         "dist/cliOutput.js",

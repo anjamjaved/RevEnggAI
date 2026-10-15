@@ -454,6 +454,15 @@ napi_value processCall(napi_env env, const std::wstring& operation, const std::v
   throw Failure("Unknown native process operation", L"", ERROR_INVALID_PARAMETER);
 }
 
+napi_value inspectWindowCapture(napi_env env) {
+  auto result = object(env);
+  set(env, result, "abiVersion", number(env, 1));
+  set(env, result, "nodeApiVersion", number(env, 8));
+  set(env, result, "architecture", string(env, std::string("x64")));
+  set(env, result, "windowCapture", boolean(env, true));
+  return result;
+}
+
 napi_value inspect(napi_env env, std::unique_ptr<Runtime>& pending) {
   // Settle the previous owner before admitting another probe. Failed cleanup
   // retains its handles, including when identity construction itself failed.

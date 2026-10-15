@@ -8,9 +8,12 @@ import {
   type EvidenceToolFamilyOptions,
 } from "./retainedSummaryDelivery.js";
 
-const SUMMARY_DELIVERY: ReadonlySet<string> = new Set(["inspect_macho"]);
+const SUMMARY_DELIVERY: ReadonlySet<string> = new Set([
+  "inspect_macho",
+  "capture_windows_window_screenshot",
+]);
 
-/** Register macOS native contracts; Mach-O inspection can deliver a retained summary. */
+/** Register native contracts with caller-selected retained summaries. */
 export const registerNativeTools = (
   server: EvidenceMcpServer,
   options: EvidenceToolFamilyOptions,

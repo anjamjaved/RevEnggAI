@@ -493,6 +493,22 @@ rename, later-query handle-based recovery, successful-admission caching, and
 environment-teardown cleanup. It neither
 establishes the cause of the intermittent #1701 host failure nor replaces
 verification with the shipped production artifact.
+A selected-window screenshot claim needs a separate interactive ordinary-user
+Windows desktop fixture: the fixture must create one source-owned PE window,
+provide its PID/HWND to both CLI and stdio MCP, and verify target binding, PNG
+digest/dimensions, destroyed-window refusal, and the absence of
+desktop/region/title-search fallbacks. Cross-compiling the addon or a hosted
+Windows runner without an interactive desktop does not prove that capture lane.
+Run `node scripts/verify-windows-window-capture.mjs PACKAGE_ROOT FIXTURE_EXE`
+against the built source-owned `tests/fixtures/windows/windowCapture.cc` window.
+The Windows CI lane cross-builds that fixture and verifies pixels through CLI
+and stdio MCP, fresh frames after repaint, retained-image reads, ANSI captions,
+destroyed HWNDs, exact file identity, source/PNG capacity refusals, a smaller-image
+retry, request cancellation and recovery, and cleanup. Cancellation verifies the
+written RPC; it does not establish that the target paint handler was blocked.
+Run it against an independently
+installed npm artifact for a packaged-runtime claim. Report the actual host and
+scope; source and simulated-provider tests alone do not establish GUI capture.
 `npm run verify:ghidra:windows:package` additionally packs and installs REA into
 an isolated prefix and runs ordinary-user CLI/MCP operations against their
 canonical schemas. Run the controlled fixture generator before that lane, or

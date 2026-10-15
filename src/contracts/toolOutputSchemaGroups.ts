@@ -4,6 +4,7 @@ import {
   artifactInventorySummaryViewResultSchema,
   interfaceBuilderSummaryViewResultSchema,
   machoSummaryViewResultSchema,
+  windowsWindowSummaryViewResultSchema,
   managedArtifactSummaryViewResultSchema,
   managedMemberSummaryViewResultSchema,
 } from "../domain/analysisView/analysisView.js";
@@ -16,6 +17,7 @@ import {
 import { nativeFunctionAnnotationsSchema } from "../domain/native/nativeFunctionAnnotations.js";
 import { nativeLoadImageSchema } from "../domain/native/nativeLoadImage.js";
 import { nativeUiResultSchema } from "../domain/native/nativeUiObservation.js";
+import { windowsWindowScreenshotResultSchema } from "../domain/native/windowsWindowScreenshot.js";
 import { nativeValueTraceSchema } from "../domain/native/nativeValueTrace.js";
 import { nativeDataTypeSchema } from "../domain/native/nativeDataType.js";
 import { nativeCallObservationResultSchema } from "../domain/native/nativeCallObservation.js";
@@ -388,6 +390,12 @@ export const enhancedOutputSchemas: Readonly<Record<string, z.ZodObject>> = {
 
 /** Exact Evidence schemas for provider-neutral native inspection. */
 export const nativeOutputSchemas: Readonly<Record<string, z.ZodObject>> = {
+  capture_windows_window_screenshot: evidenceResultOf(
+    z.union([
+      windowsWindowScreenshotResultSchema,
+      windowsWindowSummaryViewResultSchema,
+    ]),
+  ),
   observe_native_ui: evidenceResultOf(nativeUiResultSchema),
   capture_native_ui_scenario: evidenceResultOf(nativeUiResultSchema),
   observe_native_calls: evidenceResultOf(nativeCallObservationResultSchema),
@@ -464,6 +472,9 @@ const lifecycleTargetFields = {
 };
 const detectedLifecycleTargetSchema = z.object({
   ...lifecycleTargetFields,
+  executable_role: z
+    .enum(["application", "shared-library", "non-executable"])
+    .exactOptional(),
   format: targetFormatSchema.exclude(["raw-binary"]),
   architecture: z.enum(BINARY_ARCHITECTURES).exclude(["6502"]).nullable(),
 });

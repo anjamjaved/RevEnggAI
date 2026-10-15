@@ -424,6 +424,59 @@ owned helper per scenario, removes its temporary compiler cache and stops its
 helper on cancellation. It does not launch or own the selected application. UI
 actions may change application data or trigger network activity.
 
+### Windows selected-window screenshots
+
+`capture_windows_window_screenshot` is a separate, narrower Windows x64
+capability for an active PE **application** target. It captures one passive PNG
+for an exact existing PID and canonical lowercase `HWND` string, for example:
+
+```sh
+rea capture-windows-window-screenshot C:\Apps\Example.exe --pid 1234 --window-handle 0x1234 --json
+```
+
+In an MCP session, call `open_binary` for the PE application first, then supply
+the same `pid` and `window_handle`. REA verifies that the HWND belongs to that
+PID, reads the process start time and image path, and checks the selected
+on-disk executable SHA-256 before and after capture. The result retains a
+PNG with its digest, byte count, rendered/source dimensions, title, and the exact
+process/window identity. MCP defaults to `detail: "summary"`: the session retains
+the complete frame and returns only metadata and `parent_evidence_id`. To read
+that same image without another capture, call `inspect_analysis_view` with that
+retained Evidence ID and `view: {kind: "windows-window", facet: "screenshot"}`.
+Use `detail: "complete"` for inline PNG bytes. The one-shot CLI returns complete
+Evidence, suitable for redirecting to a local file. `--max-dimension` applies to
+both transports.
+
+The capture is confined to the selected client area through `PrintWindow`
+(`PW_CLIENTONLY`). REA launches one private Node helper in an owned Windows Job
+Object; the selected application is not launched or owned. A five-second helper
+deadline and cancellation terminate that helper through the shared process
+supervisor, including when the target paint handler blocks. Capture is serialized
+per REA process, with a 64 MiB helper JavaScript heap and a 256 MiB Job Object
+commit limit. Failed cleanup retains its supervisor for retry and refuses new
+captures until that cleanup succeeds.
+
+REA captures at most 4,194,304 source pixels, uses physical client dimensions
+without changing the parent process DPI policy, scales the returned image to a
+caller-selected maximum dimension (2,048 by default), and retains at most 3 MiB
+of PNG bytes. It does not enumerate windows, search titles, capture a desktop or
+region, send input, request elevation, or expose UI Automation. Protected,
+elevated, minimized, GPU-composited or custom-drawn windows can refuse or render
+incompletely. Successful API completion and valid PNG bytes do not establish
+complete rendering; no broader desktop fallback is attempted.
+
+`PrintWindow` can execute the selected target's paint handler, which may change
+application UI state or cause target filesystem and network effects. A returned
+frame is one observation at read time, not proof of physical-display visibility
+or an accessibility tree. The title and image can contain private application
+data and are retained as Evidence for this explicitly selected window. Captures
+are fresh observations; REA does not cache frames or skip target identity checks.
+Use `--max-dimension` to request the image resolution needed for the question.
+
+Accessibility capture, UI Automation, and action scenarios are intentionally
+not part of this Windows screenshot-only facet. Do not present it as parity with
+the macOS `observe_native_ui` workflow.
+
 ## Native call observation
 
 `observe_native_calls` / `rea observe-native-calls <app-or-mach-o> <input-json>`

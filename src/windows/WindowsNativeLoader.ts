@@ -47,6 +47,16 @@ const inspectionSchema = z.strictObject({
   protocolStdin: z.boolean().optional(),
   /** Absent from artifacts built before owned Job Object commit limits. */
   jobMemoryLimit: z.literal(true).optional(),
+  /** Older compatible artifacts still support other controls, but not capture. */
+  windowCapture: z.literal(true).optional(),
+});
+
+/** Capture additionally requires the Job Object controls used by its helper. */
+const windowCaptureInspectionSchema = z.strictObject({
+  abiVersion: z.literal(1),
+  nodeApiVersion: z.literal(8),
+  architecture: z.literal("x64"),
+  windowCapture: z.literal(true),
 });
 
 type NativeCall = (
@@ -65,16 +75,45 @@ export interface WindowsNativeAuthority {
   readonly inspection: z.infer<typeof inspectionSchema>;
 }
 
+/** Native authority admitted only for target-bound selected-window capture. */
+export interface WindowsWindowCaptureAuthority {
+  readonly call: NativeCall;
+}
+
+type WindowsNativeFailureStage =
+  | "host"
+  | "artifact"
+  | "self-test"
+  | "inspection";
+
+type WindowsNativeLoadFailure = {
+  readonly available: false;
+  readonly reason: string;
+  readonly failureStage: WindowsNativeFailureStage;
+  /** Only a failed native invocation can recover on a later query. */
+  readonly retryable?: true;
+};
+
 /** Availability of the bundled native implementation, including load failures. */
 export type WindowsNativeLoadResult =
   | { readonly available: true; readonly authority: WindowsNativeAuthority }
+  | WindowsNativeLoadFailure;
+
+/** Availability of the independent selected-window capture facet. */
+type WindowsWindowCaptureLoadFailure = {
+  readonly available: false;
+  readonly reason: string;
+  /** Kept optional for custom narrow-capability loaders. */
+  readonly failureStage?: WindowsNativeFailureStage;
+  readonly retryable?: true;
+};
+
+export type WindowsWindowCaptureLoadResult =
   | {
-      readonly available: false;
-      readonly reason: string;
-      readonly failureStage: "host" | "artifact" | "self-test" | "inspection";
-      /** Only a failed native invocation can recover on a later query. */
-      readonly retryable?: true;
-    };
+      readonly available: true;
+      readonly authority: WindowsWindowCaptureAuthority;
+    }
+  | WindowsWindowCaptureLoadFailure;
 
 /** Trusted package reads and module loading, replaceable in loader tests. */
 export interface WindowsNativeLoadHost {
@@ -105,10 +144,14 @@ const readPackagedWindowsNativeFile = <T>(file: string, read: () => T): T => {
   }
 };
 
-/** Validate compatibility and artifact identity before invoking the native addon. */
-export const loadWindowsNativeAuthority = (
+type WindowsNativeBindingLoadResult =
+  | { readonly available: true; readonly call: NativeCall }
+  | WindowsNativeLoadFailure;
+
+/** Admit the packaged artifact before selecting a narrow native capability. */
+const loadWindowsNativeBinding = (
   host: WindowsNativeLoadHost,
-): WindowsNativeLoadResult => {
+): WindowsNativeBindingLoadResult => {
   if (host.platform !== "win32" || host.architecture !== "x64")
     return {
       available: false,
@@ -139,7 +182,26 @@ export const loadWindowsNativeAuthority = (
         "Windows native artifact SHA-256 does not match package metadata",
       );
     assertWindowsX64Artifact(artifact);
-    const binding = bindingSchema.parse(host.loadArtifact());
+    return {
+      available: true,
+      call: bindingSchema.parse(host.loadArtifact()).call,
+    };
+  } catch (cause: unknown) {
+    return {
+      available: false,
+      failureStage: "artifact",
+      reason: `REA Windows native controls are unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
+};
+
+/** Validate full native readiness for controls that require private runtime support. */
+export const loadWindowsNativeAuthority = (
+  host: WindowsNativeLoadHost,
+): WindowsNativeLoadResult => {
+  const binding = loadWindowsNativeBinding(host);
+  if (!binding.available) return binding;
+  try {
     let observed: unknown;
     try {
       observed = binding.call("inspect", []);
@@ -158,13 +220,70 @@ export const loadWindowsNativeAuthority = (
         failureStage: "inspection",
         reason: `REA Windows native inspection is invalid: ${parsed.error.message}`,
       };
-    const inspection = parsed.data;
-    return { available: true, authority: { call: binding.call, inspection } };
+    return {
+      available: true,
+      authority: { call: binding.call, inspection: parsed.data },
+    };
   } catch (cause: unknown) {
     return {
       available: false,
-      failureStage: "artifact",
-      reason: `REA Windows native controls are unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+      failureStage: "inspection",
+      reason: `REA Windows native inspection is invalid: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
+  }
+};
+
+/** Capture requires both the selected-window API and owned helper controls. */
+export const loadWindowsWindowCaptureAuthority = (
+  host: WindowsNativeLoadHost,
+): WindowsWindowCaptureLoadResult => {
+  const controls = loadWindowsNativeAuthority(host);
+  if (!controls.available) return controls;
+  const binding = controls.authority;
+  if (binding.inspection.jobMemoryLimit !== true)
+    return {
+      available: false,
+      failureStage: "inspection",
+      reason:
+        "Selected-window capture requires owned helper Job Object memory limits; install the matching native artifact.",
+    };
+  if (binding.inspection.protocolStdin !== true)
+    return {
+      available: false,
+      failureStage: "inspection",
+      reason:
+        "Selected-window capture requires owned helper protocol stdin; install the matching native artifact.",
+    };
+  try {
+    let observed: unknown;
+    try {
+      observed = binding.call("inspect_window_capture", []);
+    } catch (cause: unknown) {
+      const unsupported = z
+        .object({ win32Code: z.literal(87) })
+        .safeParse(cause).success;
+      return {
+        available: false,
+        failureStage: "inspection",
+        ...(unsupported ? {} : { retryable: true as const }),
+        reason: unsupported
+          ? "The loaded Windows addon does not support selected-window capture; rebuild or install the matching native artifact."
+          : `REA Windows selected-window capture self-test failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      };
+    }
+    const parsed = windowCaptureInspectionSchema.safeParse(observed);
+    if (!parsed.success)
+      return {
+        available: false,
+        failureStage: "inspection",
+        reason: `REA Windows selected-window capture inspection is invalid: ${parsed.error.message}`,
+      };
+    return { available: true, authority: { call: binding.call } };
+  } catch (cause: unknown) {
+    return {
+      available: false,
+      failureStage: "inspection",
+      reason: `REA Windows selected-window capture is unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     };
   }
 };
@@ -182,46 +301,63 @@ const assertWindowsX64Artifact = (bytes: Buffer): void => {
     throw new Error("Windows native artifact is not a Windows x64 PE32+ image");
 };
 
-let cached: WindowsNativeLoadResult | undefined;
-
-/** Cache stable admission; let a later query retry failed owned inspection. */
-export const systemWindowsNativeAuthority = (): WindowsNativeLoadResult => {
-  if (cached?.available === false && cached.retryable === true)
-    cached = undefined;
-  cached ??= loadWindowsNativeAuthority({
-    platform: process.platform,
-    architecture: process.arch,
-    nodeApiVersion: process.versions.napi,
-    packageVersion: PACKAGE_METADATA.version,
-    readManifest: () => {
-      const encoded = readFileSync(
-        new URL("../../native/windows/build/manifest.json", import.meta.url),
-        "utf8",
-      );
-      const value: unknown = JSON.parse(encoded);
-      return value;
-    },
-    readArtifact: () =>
-      readFileSync(
+const systemWindowsNativeLoadHost = (): WindowsNativeLoadHost => ({
+  platform: process.platform,
+  architecture: process.arch,
+  nodeApiVersion: process.versions.napi,
+  packageVersion: PACKAGE_METADATA.version,
+  readManifest: () => {
+    const encoded = readFileSync(
+      new URL("../../native/windows/build/manifest.json", import.meta.url),
+      "utf8",
+    );
+    const value: unknown = JSON.parse(encoded);
+    return value;
+  },
+  readArtifact: () =>
+    readFileSync(
+      new URL(
+        "../../native/windows/build/rea-windows-x64.node",
+        import.meta.url,
+      ),
+    ),
+  loadArtifact: () => {
+    const value: unknown = createRequire(import.meta.url)(
+      fileURLToPath(
         new URL(
           "../../native/windows/build/rea-windows-x64.node",
           import.meta.url,
         ),
       ),
-    loadArtifact: () => {
-      const value: unknown = createRequire(import.meta.url)(
-        fileURLToPath(
-          new URL(
-            "../../native/windows/build/rea-windows-x64.node",
-            import.meta.url,
-          ),
-        ),
-      );
-      return value;
-    },
-  });
+    );
+    return value;
+  },
+});
+
+let cached: WindowsNativeLoadResult | undefined;
+let cachedWindowCapture: WindowsWindowCaptureLoadResult | undefined;
+
+/** Cache stable admission; let a later query retry failed owned inspection. */
+export const systemWindowsNativeAuthority = (): WindowsNativeLoadResult => {
+  if (cached?.available === false && cached.retryable === true)
+    cached = undefined;
+  cached ??= loadWindowsNativeAuthority(systemWindowsNativeLoadHost());
   return cached;
 };
+
+/** Cache selected-window capture separately from unrelated native controls. */
+export const systemWindowsWindowCaptureAuthority =
+  (): WindowsWindowCaptureLoadResult => {
+    if (
+      cachedWindowCapture?.available === false &&
+      cachedWindowCapture.retryable === true
+    )
+      cachedWindowCapture = undefined;
+    cachedWindowCapture ??= loadWindowsWindowCaptureAuthority(
+      systemWindowsNativeLoadHost(),
+    );
+    return cachedWindowCapture;
+  };
 
 /** Require the verified backend when an operation depends on native authority. */
 export const requireWindowsNativeAuthority = (): WindowsNativeAuthority => {
@@ -229,3 +365,11 @@ export const requireWindowsNativeAuthority = (): WindowsNativeAuthority => {
   if (!loaded.available) throw new Error(loaded.reason);
   return loaded.authority;
 };
+
+/** Require the independently verified native screenshot capability. */
+export const requireWindowsWindowCaptureAuthority =
+  (): WindowsWindowCaptureAuthority => {
+    const loaded = systemWindowsWindowCaptureAuthority();
+    if (!loaded.available) throw new Error(loaded.reason);
+    return loaded.authority;
+  };

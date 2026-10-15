@@ -101,6 +101,41 @@ it("collects a real owned command and verifies its exit before returning diagnos
   });
 });
 
+it("delivers complete protocol input larger than the Windows command-line limit", async () => {
+  const input = Buffer.from(
+    JSON.stringify({ path: "C:" + "\\a".repeat(16000) }),
+  );
+  expect(input.byteLength).toBeGreaterThan(32767);
+  const result = await runOwnedCommand(
+    command(
+      "const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk); process.stdout.write(Buffer.concat(chunks));",
+    ),
+    { timeoutMs: 2000, diagnosticBytes: input.byteLength + 1024 },
+    { input },
+  );
+  expect(result.stdout.text).toBe(input.toString("utf8"));
+});
+
+it("times out and cleans up a command whose protocol reader never consumes input", async () => {
+  await expect(
+    runOwnedCommand(
+      command("setInterval(() => {}, 1000)"),
+      { timeoutMs: 500, diagnosticBytes: 1024 },
+      { input: Buffer.alloc(2 * 1024 * 1024) },
+    ),
+  ).rejects.toMatchObject({ reason: "timeout", cleanupFailure: null });
+});
+
+it("reports a protocol write failure when the child closes its input early", async () => {
+  await expect(
+    runOwnedCommand(
+      command("process.stdin.destroy()"),
+      { timeoutMs: 2000, diagnosticBytes: 1024 },
+      { input: Buffer.alloc(2 * 1024 * 1024) },
+    ),
+  ).rejects.toMatchObject({ reason: "process", collectionFailure: true });
+});
+
 it("fails an accepted nonzero command when an output stream errors and cleans it up", async () => {
   const stdout = new PassThrough();
   const stderr = new PassThrough();

@@ -529,6 +529,10 @@ jobs:
           x86_64-w64-mingw32-g++ -municode -std=c++17 -O2 -static -Wall -Wextra \
             -o .cache/windows-process-boundary/process-boundary.exe \
             tests/fixtures/windows/processBoundary.cc -ladvapi32
+          x86_64-w64-mingw32-g++ -std=c++17 -O2 -static -Wall -Wextra \
+            -Wl,--no-insert-timestamp \
+            -o .cache/windows-process-boundary/window-capture.exe \
+            tests/fixtures/windows/windowCapture.cc -lgdi32 -luser32
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-process-boundary-fixture
@@ -780,6 +784,12 @@ jobs:
           path: .cache/windows-native-inspection-fixture/
       - name: Verify native inspection failure ownership and recovery
         run: node scripts/verify-windows-native-inspection.mjs
+      - name: Verify selected-window pixels through CLI and MCP
+        timeout-minutes: 5
+        env:
+          NODE_OPTIONS: "--max-old-space-size=512"
+          UV_THREADPOOL_SIZE: "2"
+        run: node scripts/verify-windows-window-capture.mjs . .cache/windows-process-boundary/window-capture.exe
       - name: Verify real Node Inspector discovery and observation
         timeout-minutes: 10
         env:

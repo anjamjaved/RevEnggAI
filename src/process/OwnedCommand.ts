@@ -63,6 +63,8 @@ export const runOwnedCommand = async (
   },
   options: {
     readonly signal?: AbortSignal | undefined;
+    /** Complete protocol input, written and closed under the same deadline. */
+    readonly input?: Uint8Array;
     /** Synchronously accept unresolved cleanup ownership; execution still returns its original outcome. Must not throw. */
     readonly retainCleanup?: (
       owner: ProviderProcessSupervisor,
@@ -88,6 +90,7 @@ export const runOwnedCommand = async (
       deadline,
       callerSignal,
       options.retainCleanup,
+      options.input,
     );
   } finally {
     deadline.dispose();
@@ -110,12 +113,14 @@ const collectOwnedCommand = async (
     owner: ProviderProcessSupervisor,
     result: Extract<ProviderProcessStopResult, { status: "incomplete" }>,
   ) => void,
+  input?: Uint8Array,
 ): Promise<ProviderProcessSnapshot> => {
   const signal = deadline.signal;
   let launched: SpawnedOwnedProviderProcess;
   try {
     launched = await launcher({
       ...spawn,
+      ...(input === undefined ? {} : { stdin: "pipe" as const }),
       signal,
     });
   } catch (cause: unknown) {
@@ -152,8 +157,25 @@ const collectOwnedCommand = async (
     },
   );
   let failure: OwnedCommandFailure | undefined;
+  let inputPending = input !== undefined;
   try {
-    while (!(await supervisor.waitForOutputClose(10))) {
+    if (input !== undefined) {
+      const stream = launched.process.stdin;
+      if (stream == null)
+        throw new Error("Owned command protocol input is unavailable.");
+      const inputError = (cause: Error) => {
+        inputPending = false;
+        processFailure ??= `Command protocol input failed: ${cause.message}`;
+      };
+      // Retain this listener through cleanup: stopping a blocked writer can
+      // emit a late error, including when its supervisor must be retained.
+      stream.on("error", inputError);
+      stream.end(input, (cause?: Error | null) => {
+        inputPending = false;
+        if (cause != null) inputError(cause);
+      });
+    }
+    while (!(await supervisor.waitForOutputClose(10)) || inputPending) {
       const interruption = deadline.interruption;
       if (interruption !== undefined)
         throw new OwnedCommandFailure(

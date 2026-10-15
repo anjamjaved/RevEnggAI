@@ -20,6 +20,10 @@ export const bundleRuntime = async (root) => {
   for (const [directory, entries] of [
     ["mcp", { main: "main.js" }],
     [
+      "windows-capture-runtime",
+      { worker: "windows/WindowsWindowCaptureWorker.js" },
+    ],
+    [
       "cli-runtime",
       {
         cli: "cli.js",
@@ -40,7 +44,12 @@ export const bundleRuntime = async (root) => {
       treeshake: false,
       external: (source) =>
         isMetadataModule(source) ||
-        (!source.startsWith(".") && !isAbsolute(source)),
+        (!source.startsWith(".") &&
+          !isAbsolute(source) &&
+          !(
+            directory === "windows-capture-runtime" &&
+            (source === "zod" || source.startsWith("zod/"))
+          )),
       plugins: [
         {
           name: "preserve-compiled-module-locations",
